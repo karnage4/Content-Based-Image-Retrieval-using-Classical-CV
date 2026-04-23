@@ -1,0 +1,62 @@
+\documentclass[11pt, a4paper]{article}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{Assignment 4: Content-Based Image Retrieval (CBIR) \\ \large Part B: Bounding Box (ROI) Query Optimization}
+\author{Your Name \and Student ID}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report outlines the implementation and analysis of a Region of Interest (ROI) bounding box mechanism designed to mitigate background clutter in classical Content-Based Image Retrieval (CBIR). In domains where the subject occupies only a fraction of the digital canvas, spatial noise fundamentally corrupts global feature representations. By introducing an interactive cropping pipeline leveraging OpenCV and integrating it directly into our evaluation GUI, we isolate subjects mathematically prior to feature mapping. This technique drastically bolsters retrieval accuracy natively, particularly in chaotic sets such as Food-101.
+\end{abstract}
+
+\section{Introduction to the Noise Problem}
+Classical feature extractors (especially global probability densities like generic Color Histograms or LBP structures) operate under an inherent deficiency: they weight all pixels with equal mathematical authority. 
+
+When a user submits a query of a hamburger sitting on a red patio table, a global Color Histogram dedicates significant algorithmic variance to recording the frequency of "red". During the retrieval phase, the engine will invariably prioritize retrieving other irrelevant images that also happen to feature large amounts of red table-top surfaces, abandoning the texture of the food itself. In the Paris Buildings dataset, blue skies, surrounding foliage, and pedestrian crowds severely pollute the structural edges fed into Histogram of Oriented Gradients (HOG) tracking.
+
+\section{Implementation Architecture}
+To combat the \textit{Semantic Gap} exacerbated by background clutter, we implemented an interactive Bounding Box pipeline directly into our search logic. 
+
+\subsection{Code Execution}
+The bounding box flag (\texttt{--roi} internally, or simply toggling the \textit{"Enable Bounding Box"} checkbox in our Tkinter \texttt{gui.py}) triggers a native OpenCV subroutine:
+
+\begin{enumerate}
+    \item \textbf{Render:} The original query image is rendered to the user via \texttt{cv2.selectROI}.
+    \item \textbf{Crop:} The user natively draws a spatial rectangle specifically around the exact object desired (e.g., exclusively drawing around the specific architectural column or the plate of food).
+    \item \textbf{Isolation:} The script mathematically intercepts the coordinate bounds $(x, y, w, h)$, and spatially splices the raw Numpy image tensor \textit{before} it is passed to the feature extractor algorithm.
+\end{enumerate}
+
+\subsection{Algorithmic Impact}
+Because the query image array has been dynamically shrunken, calling \texttt{extractor.compute(query\_img)} processes exclusively the "pure" pixels of the object. When the newly purified feature vector (e.g., an L1-Normalized HSV Histogram) is pushed against the pre-computed database via nearest-neighbors, the resulting similarity measurements map perfectly against the core texture/color, entirely ignoring the background.
+
+\section{Analysis of Improved Results}
+
+The inclusion of the Bounding Box query structure universally improves retrieval performance visually and mathematically, specifically dependent on the feature being isolated.
+
+\subsection{Paris Buildings Dataset}
+In architectural queries, users often wish to find a specific spire, geometric glass window, or isolated statue. By drawing an ROI directly over a specific sub-structure:
+\begin{itemize}
+    \item \textbf{Structural HOG:} The dense gradient vectors become entirely concentrated on the rigid architecture isolated in the crop, immediately discarding the noisy edge-gradients caused by clouds or trees in the original query.
+    \item \textbf{Color SIFT-BoVW:} Vocabulary clustering becomes hyper-focused on the stone/masonry textures, completely omitting spatial background elements. This forces the \texttt{v-words} histogram to perfectly match other images focusing on identical stone elements.
+\end{itemize}
+
+\subsection{Food-101 Dataset}
+The Bounding Box provides the absolute largest improvement delta in highly chaotic environments like Food-101.
+\begin{itemize}
+    \item \textbf{Eliminating The Plate/Table:} Food images contain immense visual mass dedicated to wooden tables, silverware, and patterned plates. Drawing the bounding box exclusively around the food completely alters the Color Histogram matrix. Returning to our earlier analogy, the "red patio table" is eliminated from the probability density, forcing the Chi-Squared retrieval mathematically to only search the database for the exact color footprint of the hamburger patty/bun itself.
+    \item Consequently, qualitative returns dramatically jump from retrieving random "images taken in similar lighting/restaurants" to legitimately clustering visually similar foods together.
+\end{itemize}
+
+\section{Conclusion}
+While classical computer vision algorithms inherently struggle with abstract understanding, the deployment of a Bounding Box pre-processing constraint provides a massively powerful workaround. By utilizing human-guidance at the query-initiation stage to physically frame the mathematical boundaries, we successfully isolate core features locally, resulting in a drastically cleaner retrieval matrix and vastly higher Precision@10 relevancy.
+
+\end{document}

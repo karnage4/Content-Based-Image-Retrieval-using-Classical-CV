@@ -1,0 +1,86 @@
+\documentclass[11pt, a4paper]{article}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{Assignment 4: Content-Based Image Retrieval (CBIR) \\ \large Part A: Whole-Image Similarity Search}
+\author{Your Name \and Student ID}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report outlines the implementation and analysis of a classical Content-Based Image Retrieval (CBIR) pipeline optimized for whole-image similarity search. In strict avoidance of Deep Learning components, this architecture fuses purely classical feature representations—Histogram of Oriented Gradients (HOG), Spatial Local Binary Patterns (LBP), HSV Color Histograms, and Color SIFT over Bag of Visual Words (BoVW)—with mathematical nearest-neighbor clustering. Additionally, a dynamic Graphical User Interface (GUI) was engineered to streamline robust query formulation across varying datasets and mathematical metrics.
+\end{abstract}
+
+\section{Introduction and Dataset Properties}
+To evaluate the absolute limits of classical machine vision in modern problem domains, the engine was heavily tested on two distinct, real-world datasets encompassing stark visual challenges.
+
+\subsection{Paris Buildings Dataset}
+Consisting of 6,412 images unified over 11 distinct landmark categories, this dataset strongly tests architectural pattern rigidity against severe viewpoint changes and extreme scale disparities. Establishing a foundational random-guessing baseline yields an accuracy of $\frac{1}{11} \approx 9.09\%$.
+
+\subsection{Food-101 Dataset}
+A highly chaotic dataset comprising 101 disparate food categories. It severely lacks rigid shape geometries and is plagued heavily by multi-scale object focus and extreme background/table clutter. Representing 101,000 original images, the scale necessitated subset sampling utilizing uniform steps to extract 20,200 perfectly distributed images (200 mathematically distributed sample bounds per class). The random-guessing baseline for this set is exceedingly harsh at $\frac{1}{101} \approx 0.99\%$.
+
+\section{Methodology: Feature Extraction}
+Classical retrieval algorithms are highly subjective to the specific modality (shape vs. color vs. texture) of the feature mapped. To combat the semantic gap effectively, four deeply contrasting methods were implemented equitably.
+
+\begin{itemize}
+    \item \textbf{Histogram of Oriented Gradients (HOG):} Designed as a dense vector spatial layout extractor, images were uniformly scaled to $128 \times 128$ to map global contour structures via localized cell orientation counts. Output vectors strictly maintain mathematical bounds via an explicitly applied global $L2$ Normalization.
+    \item \textbf{Spatial Local Binary Patterns (LBP):} Overcoming the severe failure of traditional global LBP arrays which inadvertently destroy positioning matrices (confusing top-sky textures for floor-ground textures), our pipeline utilizes a structural spatial grid. Scaled cleanly to $256 \times 256$, matrices compute micro-textures of $radius=2$ across independent $4 \times 4$ regional grids. The aggregated local histograms receive explicit $L1$ normalization.
+    \item \textbf{HSV Color Histograms:} An 8-bin uniform mapping per channel mathematically compresses raw pixel distributions across Hue, Saturation, and Value domains into tightly constrained 512-variable arrays. Output arrays are fundamentally constrained as probability densities via $L1$ norms.
+    \item \textbf{Color SIFT with BoVW:} Standard SIFT is globally grayscale, failing to distinguish between structurally identical shadows and foliage. This was fundamentally modified to utilize only the Hue and Saturation layers of the Opponent space, mathematically discarding the 'V' (Value) axis entirely to enforce aggressive lighting invariance. SIFT descriptors mapped up to 200 geometric clusters per image, before shifting into a densely restricted $K=200$ dimensional spatial map optimized by \texttt{MiniBatchKMeans}.
+\end{itemize}
+
+\section{Methodology: Mathematical Similarity Metrics}
+Extracted feature models map differently across spatial dimensions depending on formatting. Matching generic spatial angles (dense vectors) against pure magnitude (histograms) leads to false positive failures. 
+
+\begin{enumerate}
+    \item \textbf{Euclidean ($L2$) \& Cosine Similarity:} Assigned exclusively to continuous dense representations like HOG. Sklearn natively processes `Cosine Similarity` internally converting it natively into algorithmic distances scaling proportionally ($1 - cosine(A,B)$).
+    \item \textbf{Chi-Squared Distance:} Strictly implemented as a hyper-fast numpy brute-force engine natively embedded into the \texttt{FeatureIndex} logic array. This acts as the explicitly dedicated mathematical metric for $LBP$, $Color Histograms$, and $BoVW$ arrays because Chi-Squared math fundamentally penalizes variations inside microscopically rare textural buckets fairly, overcoming $L1/L2$ normalization flattening.
+\end{enumerate}
+
+\section{Interactive Search Application (GUI)}
+To automate the evaluation process robustly, a \texttt{Tkinter}-based Graphic User Interface operates over the Python backend. Natively binding dropdowns for \textit{Dataset}, \textit{Feature Options}, and the aforementioned \textit{Similarity Metrics}, it natively calls mathematical query matrices and extracts target elements cleanly. Because it explicitly processes the queried generic file through the exact \texttt{extractor.compute(img)} functions utilized during index generation, it firmly eliminates unequal scaling, false pixel skewing, and irregular matrix orientations automatically across every dynamic query search runtime.
+
+\section{Results and Performance Analysis}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llcc@{}}
+\toprule
+\textbf{Dataset} & \textbf{Feature Extraction} & \textbf{Metric} & \textbf{Precision@10} \\ \midrule
+Paris Buildings & HOG & Euclidean & 0.2520 \\
+Paris Buildings & HOG & Cosine & 0.2521 \\
+Paris Buildings & LBP (Spatial) & Chi-Square & 0.2371 \\
+Paris Buildings & LBP (Spatial) & Manhattan (L1) & 0.2446 \\
+Paris Buildings & Color Histogram & Chi-Square & \textbf{0.2655} \\
+Paris Buildings & Color Histogram & Cosine & 0.2138 \\
+Paris Buildings & Color SIFT-BoVW & Chi-Square & 0.2252 \\
+Paris Buildings & Color SIFT-BoVW & Cosine & 0.2219 \\ \midrule
+Food-101 & HOG & Euclidean & 0.0197 \\
+Food-101 & HOG & Cosine & 0.0197 \\
+Food-101 & LBP (Spatial) & Chi-Square & 0.0242 \\
+Food-101 & LBP (Spatial) & Manhattan (L1) & 0.0251 \\
+Food-101 & Color Histogram & Chi-Square & 0.0338 \\
+Food-101 & Color Histogram & Cosine & 0.0265 \\
+Food-101 & Color SIFT-BoVW & Chi-Square & 0.0331 \\
+Food-101 & Color SIFT-BoVW & Cosine & \textbf{0.0396} \\
+\bottomrule
+\end{tabular}
+\caption{Overall Precision@10 Analysis of Whole-Image CBIR (Part A)}
+\label{tab:precision_partA}
+\end{table}
+
+\subsection{Discussion of Accuracy and the Semantic Gap}
+Table \ref{tab:precision_partA} definitively quantifies the massive, naturally existing ``semantic gap" between algorithmic perception and mathematical retrieval. 
+When attempting to index Paris Buildings, the baseline probability requirement strictly sits at ~9\%. By exclusively fusing Color variables utilizing a Chi-Squared spatial penalty, the model scored a heavy peak accuracy (26.55\%). Due to architectural layout dependencies, HOG rigid shapes successfully recognized and matched parallel boundaries hovering equally around ~25\%.
+
+In devastating contrast, the Food-101 domain enforces a 0.99\% baseline margin. Mathematical attempts to enforce rigid boundaries natively completely crashed geometric algorithms (HOG bottomed at ~1.97\%) because natural human food carries exclusively zero repetitive, standardized edges. Ultimately, forcing a Hue/Saturation separation on localized Color-SIFT gradients proved highly capable (scoring ~3.96\%) mathematically circumventing the heavy background plate-clutter restrictions that plague global analysis histograms. 
+
+\end{document}

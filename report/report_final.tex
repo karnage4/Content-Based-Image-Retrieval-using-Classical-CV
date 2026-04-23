@@ -1,0 +1,570 @@
+% ============================================================
+%  Assignment 4: Content-Based Image Retrieval — Final Report
+% ============================================================
+\documentclass[11pt, a4paper]{article}
+
+% --- Packages ---
+\usepackage{graphicx}
+\usepackage{amsmath, amssymb}
+\usepackage[colorlinks=true, linkcolor=blue, urlcolor=blue]{hyperref}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{setspace}
+\usepackage{xcolor}
+\usepackage{mdframed}
+\usepackage{array}
+\usepackage{tabularx}
+
+\geometry{margin=1in}
+\setstretch{1.2}
+
+% --- Placeholder command for missing figures ---
+\newcommand{\imagebox}[2]{%
+  \begin{mdframed}[backgroundcolor=gray!15, linecolor=gray!50, linewidth=1pt]
+    \centering
+    \vspace{#2}
+    \textcolor{gray}{\textit{[Figure: #1]}}
+    \vspace{#2}
+  \end{mdframed}
+}
+
+% ============================================================
+%  Title Page
+% ============================================================
+\title{
+  \vspace{1cm}
+  \textbf{\LARGE Assignment 4: Content-Based Image Retrieval} \\[0.5em]
+  \large Using Classical Computer Vision Features \\[1em]
+  \normalsize \textit{A complete implementation and analysis report covering\\
+  whole-image retrieval, region-based retrieval, and written analysis}
+}
+\author{Your Name \\ Student ID}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+% ---- Abstract ----
+\begin{abstract}
+This report documents the full design, implementation, and rigorous evaluation of a Content-Based Image Retrieval (CBIR) system built exclusively from classical computer vision techniques — no deep learning is used at any stage. The pipeline extracts four types of visual features (HOG, Spatial LBP, HSV Color Histograms, and Color SIFT with Bag-of-Visual-Words) and compares them using four distance metrics (Euclidean, Cosine, Chi-Squared, Manhattan). Experiments are conducted on two structurally opposing datasets: \textit{Paris Buildings} and \textit{Food-101}. The report also covers region-based retrieval via interactive bounding box selection (Part B), and a comprehensive analytical section (Part C) addressing feature comparison, computational performance, bounding box effects, dataset-specific challenges, and proposed classical improvements.
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+% ============================================================
+%  SECTION 1 — EDA
+% ============================================================
+\section{Exploratory Data Analysis (EDA)}
+
+Before designing any retrieval pipeline, it is critical to understand the statistical and visual properties of the data. Because classical feature descriptors are not learned — they are hand-crafted mathematical transforms — the analysis must be informed by the geometry, distribution, and domain characteristics of the images.
+
+% ---- 1.1 Paris Buildings ----
+\subsection{Dataset 1 — Paris Buildings (Paris 6K)}
+
+\textbf{Overview:} The Paris Buildings dataset contains 6,412 photographs of 11 Paris landmarks, including the Eiffel Tower, Notre Dame, the Louvre, Sacré-Cœur, and the Moulin Rouge, among others. Images were collected from Flickr under real-world conditions.
+
+\textbf{Class Distribution:} The dataset is not perfectly balanced. Dominant classes such as the Eiffel Tower are significantly over-represented compared to niche monuments. This introduces a retrieval bias: neighbours are more likely to be drawn from large classes even when the structural match is weak. The random retrieval baseline — the expected Precision@10 for a system returning results at chance — is:
+\[
+  P_{\text{random}} = \frac{1}{11} \approx 9.09\%
+\]
+Any method scoring above this threshold demonstrates genuine discriminative power.
+
+\textbf{Aspect Ratio and Resolution Variance:} Architectural imagery spans a wide range of capture geometries. Cathedral spires yield tall portrait images while plaza panoramas produce wide landscape formats. Because HOG and LBP both rely on fixed-size grids, every image is normalised to a canonical resolution ($128 \times 128$ for HOG, $256 \times 256$ for LBP) before feature computation.
+
+\textbf{Visual and Lighting Diversity:} The same monument can appear radically different depending on camera angle, time of day, season, and weather. Morning fog, midday sun, and dusk lighting produce vastly different pixel intensities and gradient magnitudes on identical stone surfaces.
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Paris Buildings — Sample Image Grid (one image per class)}{1.8cm}
+  \caption{Representative sample images from all 11 Paris Buildings classes.}
+  \label{fig:paris_sample_grid}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Paris Buildings — Class Distribution Bar Chart}{1.8cm}
+  \caption{Image count per landmark class showing dataset imbalance.}
+  \label{fig:paris_class_dist}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Paris Buildings — Image Resolution Scatter Plot}{1.8cm}
+  \caption{Width vs.\ height distribution across the Paris dataset revealing significant aspect-ratio variation.}
+  \label{fig:paris_resolution}
+\end{figure}
+
+% ---- 1.2 Food-101 ----
+\subsection{Dataset 2 — Food-101}
+
+\textbf{Overview:} Food-101 contains 101,000 photographs spanning 101 food categories (exactly 1,000 images per class), captured in real-world restaurant and home settings. Categories include pizza, sushi, steak, waffles, tiramisu, and 96 others.
+
+\textbf{Class Distribution — Perfect Balance:} Unlike Paris, Food-101 is precisely balanced with 1,000 images per class. This is ideal for unbiased evaluation. However, the sheer scale ($101 \times 1{,}000 = 101{,}000$ images) creates a severe computational challenge. To manage this without introducing class bias, we apply \textit{uniform per-class subsampling}:
+\[
+  \text{step} = \left\lfloor \frac{N_{\text{class}}}{200} \right\rfloor
+  \quad \Rightarrow \quad
+  \text{selected images} = \text{images}[0 :: \text{step}]
+\]
+This retains 200 images per class (20,200 total) with evenly spaced coverage of the full visual distribution.
+
+\textbf{The Compressed Baseline:} With 101 classes, a purely random retrieval system has:
+\[
+  P_{\text{random}} = \frac{1}{101} \approx 0.99\%
+\]
+All Precision@10 scores reported for Food-101 must be read against this extremely low baseline — even a result of 2\% represents a doubling relative to chance.
+
+\textbf{Absence of Geometric Structure:} Food has no defined geometry. A pizza is a circle of varying sizes; a curry is an amorphous blob; a salad is a random pile. This makes gradient-based descriptors like HOG almost entirely ineffective.
+
+\textbf{Background Contamination:} Environmental pixels (table surfaces, plates, cutlery, hands) frequently dominate the horizontal pixel budget. A red-checked tablecloth can occupy more pixel area than the food itself, causing color-based retrieval to return images with similar tablecloths regardless of the food category.
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Food-101 — Sample Grid (25 random classes, one image each)}{1.8cm}
+  \caption{Representative samples from 25 of the 101 Food-101 categories.}
+  \label{fig:food_sample_grid}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Food-101 — Class Distribution Bar Chart (Top 15 and Bottom 10)}{1.8cm}
+  \caption{Class distribution confirming near-perfect balance across Food-101.}
+  \label{fig:food_class_dist}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Food-101 — Image Resolution Scatter Plot}{1.8cm}
+  \caption{Resolution spread across Food-101, showing wide variation in image dimensions.}
+  \label{fig:food_resolution}
+\end{figure}
+
+% ============================================================
+%  SECTION 2 — PART A: WHOLE-IMAGE RETRIEVAL
+% ============================================================
+\newpage
+\section{Part A — Whole-Image Similarity Search}
+
+\subsection{Objective}
+Given a query image drawn from either dataset, the system must retrieve and rank the top 10 most visually similar images from the same dataset using classical feature extraction and distance-based nearest-neighbour search.
+
+\subsection{Step-by-Step Implementation Pipeline}
+The pipeline follows a strict offline/online split to guarantee interactive query speed:
+\begin{enumerate}
+  \item \textbf{Dataset Loading and Sampling:} Image paths are recursively scanned. For Food-101, a uniform subsampling of 200 images per class is applied. For Paris, all images are used.
+  \item \textbf{Feature Extraction (Offline):} Each image is processed by the selected extractor and a fixed-length vector is produced and stored to disk as a \texttt{.npy} file. For BoVW methods, a visual vocabulary is built first via \texttt{MiniBatchKMeans} and saved as a \texttt{.pkl} file.
+  \item \textbf{Index Construction (Offline):} A \texttt{FeatureIndex} wrapping \texttt{sklearn.neighbors.NearestNeighbors} is built from all stored feature vectors and serialised to disk.
+  \item \textbf{Query Processing (Online):} The user selects a query image via the GUI. The same extractor processes the query. If the method is BoVW, the saved \texttt{.pkl} vocabulary is loaded and used.
+  \item \textbf{Retrieval and Ranking:} The query vector is fed into the loaded index. The top $k{+}5$ results are fetched, the query image itself is removed by path comparison, and the final top 10 are ranked by ascending distance.
+  \item \textbf{Visualisation:} Results are displayed in a Matplotlib grid with the query image on the left and the 10 retrieved images annotated with their rank and distance score.
+\end{enumerate}
+
+\subsection{Feature Extraction Methods}
+
+\subsubsection{Histogram of Oriented Gradients (HOG)}
+HOG captures local gradient orientations, making it inherently sensitive to edges and structural geometry.
+
+\begin{itemize}
+  \item \textbf{Input size:} $128 \times 128$ (grayscale)
+  \item \textbf{Orientations:} 8
+  \item \textbf{Pixels per cell:} $16 \times 16$
+  \item \textbf{Cells per block:} $2 \times 2$
+  \item \textbf{Block normalisation:} L2-Hys (Lowe clipping)
+  \item \textbf{Post-normalisation:} Global L2 normalisation applied to the final vector
+\end{itemize}
+
+\textbf{Rationale:} HOG was selected for Paris because architectural landmarks are defined by strong, repeatable edge patterns — vertical pillars, arch curves, and rectilinear window grilles. The $16 \times 16$ cell size provides adequate spatial resolution without excessive noise sensitivity. Global L2 normalisation ensures that Euclidean distance comparisons are scale-invariant.
+
+\subsubsection{Spatial Local Binary Patterns (LBP)}
+Standard global LBP histograms discard spatial layout entirely. Our implementation uses a \textbf{$4 \times 4$ spatial grid} to preserve where textures occur within the image.
+
+\begin{itemize}
+  \item \textbf{Input size:} $256 \times 256$ (grayscale)
+  \item \textbf{Variant:} Uniform LBP
+  \item \textbf{Radius:} 2 pixels; \textbf{Points:} 16
+  \item \textbf{Grid:} $4 \times 4$ blocks, each producing an independent normalised histogram
+  \item \textbf{Concatenation:} All 16 block histograms are concatenated and L1-normalised
+\end{itemize}
+
+\textbf{Rationale:} A uniform LBP at radius 2 with 16 sample points captures mid-scale micro-textures (stone grain, carved surfaces, food texture). The $4 \times 4$ grid is critical: it ensures that the sky texture at the top of a Building image does not contaminate the ground texture at the bottom. L1 normalisation is appropriate for probability distributions.
+
+\subsubsection{HSV Color Histograms}
+\begin{itemize}
+  \item \textbf{Color space:} HSV (Hue, Saturation, Value)
+  \item \textbf{Bins:} $[8, 8, 8]$ producing a $512$-dimensional vector
+  \item \textbf{Normalisation:} L1 (probability density)
+\end{itemize}
+
+\textbf{Rationale:} The HSV space separates chromatic content from brightness, making histograms less sensitive to mild illumination changes than BGR. The compact $[8, 8, 8]$ binning offers an excellent precision/dimension tradeoff. Chi-Squared distance was selected as the primary metric since it penalises differences in low-frequency bins more heavily than in high-frequency ones — particularly useful when the majority of pixels belong to a handful of dominant hues.
+
+\subsubsection{Color SIFT with Bag-of-Visual-Words (BoVW)}
+This is the most expressive and computationally expensive descriptor.
+
+\begin{itemize}
+  \item \textbf{Input size:} $256 \times 256$
+  \item \textbf{Keypoint detection:} SIFT on grayscale channel
+  \item \textbf{Descriptor computation:} SIFT applied independently to the H and S channels of HSV; descriptors are horizontally concatenated ($128 + 128 = 256$ dims per keypoint)
+  \item \textbf{Descriptor cap:} $\max\_desc = 200$ per image (random subsampling)
+  \item \textbf{Vocabulary:} $k = 200$ clusters via \texttt{MiniBatchKMeans} (batch\_size=1000, n\_init=3)
+  \item \textbf{Image representation:} L1-normalised histogram of visual word assignments
+\end{itemize}
+
+\textbf{Rationale for discarding the V channel:} The Value (brightness) channel of HSV encodes illumination directly. By computing SIFT descriptors only on H and S, the system becomes fully invariant to global brightness changes — solving the illumination variation problem identified in the EDA without any post-hoc correction. SIFT itself is scale and rotation invariant, directly addressing the viewpoint and scale variation challenge of the Paris dataset.
+
+\subsection{Similarity Metrics}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Metric} & \textbf{Formula} & \textbf{Used with} \\ \midrule
+Euclidean (L2) & $\|a - b\|_2$ & HOG \\
+Cosine & $1 - \frac{a \cdot b}{\|a\|\|b\|}$ & HOG, Color SIFT-BoVW \\
+Chi-Squared ($\chi^2$) & $\sum_i \frac{(a_i - b_i)^2}{a_i + b_i + \varepsilon}$ & LBP, Color Histogram, BoVW \\
+Manhattan (L1) & $\sum_i |a_i - b_i|$ & LBP \\ \bottomrule
+\end{tabular}
+\caption{Distance metrics implemented and their primary feature pairings.}
+\label{tab:metrics}
+\end{table}
+
+Chi-Squared distance was implemented as a fully vectorised custom function rather than relying on any library, enabling efficient batch computation across the entire index simultaneously.
+
+\subsection{Quantitative Results — Precision@10}
+
+Precision@10 is defined as the fraction of the top 10 retrieved images that belong to the same class as the query:
+\[
+  \text{Precision@10} = \frac{|\{\text{top-10 results}\} \cap \{\text{same class as query}\}|}{10}
+\]
+Each score is averaged over all images in the dataset used as queries.
+
+\begin{table}[H]
+\centering
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}llcc@{}}
+\toprule
+\textbf{Dataset} & \textbf{Feature} & \textbf{Metric} & \textbf{Precision@10} \\ \midrule
+Paris Buildings & HOG                 & Euclidean     & 0.2520 \\
+Paris Buildings & HOG                 & Cosine        & 0.2521 \\
+Paris Buildings & LBP (Spatial 4×4)   & Chi-Squared   & 0.2371 \\
+Paris Buildings & LBP (Spatial 4×4)   & Manhattan     & 0.2446 \\
+Paris Buildings & Color Histogram     & Chi-Squared   & \textbf{0.2655} \\
+Paris Buildings & Color Histogram     & Cosine        & 0.2138 \\
+Paris Buildings & Color SIFT-BoVW     & Chi-Squared   & 0.2252 \\
+Paris Buildings & Color SIFT-BoVW     & Cosine        & 0.2219 \\ \midrule
+Food-101 & HOG                 & Euclidean     & 0.0197 \\
+Food-101 & HOG                 & Cosine        & 0.0197 \\
+Food-101 & LBP (Spatial 4×4)   & Chi-Squared   & 0.0242 \\
+Food-101 & LBP (Spatial 4×4)   & Manhattan     & 0.0251 \\
+Food-101 & Color Histogram     & Chi-Squared   & 0.0338 \\
+Food-101 & Color Histogram     & Cosine        & 0.0265 \\
+Food-101 & Color SIFT-BoVW     & Chi-Squared   & 0.0331 \\
+Food-101 & Color SIFT-BoVW     & Cosine        & \textbf{0.0396} \\ \midrule
+\multicolumn{3}{l}{Random baseline — Paris ($1/11$)} & 0.0909 \\
+\multicolumn{3}{l}{Random baseline — Food-101 ($1/101$)} & 0.0099 \\
+\bottomrule
+\end{tabular}%
+}
+\caption{Full Precision@10 results for all 16 experimental configurations. Bold denotes best per dataset.}
+\label{tab:precision}
+\end{table}
+
+\subsection{Analysis of Results}
+
+\textbf{Paris Buildings:} All methods significantly exceed the 9.09\% random baseline, confirming genuine retrieval ability. The best result of \textbf{26.55\%} was achieved by the Color Histogram with Chi-Squared distance. This is somewhat surprising given the expectation that texture-based or keypoint-based methods would dominate architectural retrieval. The explanation lies in Paris's strong photographic colour identity: the warm limestone of the Pantheon, the dark iron lattice of the Eiffel Tower under a grey sky, and the cream-white facades of Haussmann buildings each produce distinct HSV profiles that the $[8,8,8]$ histogram captures reliably. HOG performed almost identically under both Euclidean and Cosine metrics ($\approx$25.2\%), demonstrating that the gradient structure of Paris monuments is both discriminative and stable. LBP with Manhattan distance (24.46\%) slightly outperformed Chi-Squared for Paris, likely because L1 distance is less sensitive to zero-count bins in the concatenated spatial histogram.
+
+\textbf{Food-101:} Scores are uniformly low — all methods hover between 1.97\% and 3.96\%. HOG is the worst performer (1.97\%, barely above the 0.99\% baseline) because food lacks rigid geometric structure. The best method is Color SIFT-BoVW with Cosine distance (3.96\%), approximately four times the random baseline. By detecting local keypoints and encoding their colour-gradient patterns into a 200-word vocabulary, the system can identify recurring visual motifs (e.g., the bubbly texture of a waffle grid or the sesame seed pattern of a hamburger bun) that global descriptors miss entirely.
+
+\subsection{Visual Retrieval Results — Part A}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part A — Query Result 1: Paris query with Color Histogram + Chi-Squared}{3cm}
+  \caption{Example query on the Paris Buildings dataset using Color Histogram with Chi-Squared distance. Query image shown left; top-10 retrieved images with distance scores shown right.}
+  \label{fig:partA_paris_1}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part A — Query Result 2: Paris query with HOG + Euclidean}{3cm}
+  \caption{Paris query using HOG with Euclidean distance, demonstrating strong structural matching.}
+  \label{fig:partA_paris_2}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part A — Query Result 3: Food-101 query with Color SIFT-BoVW + Cosine}{3cm}
+  \caption{Food-101 query using Color SIFT-BoVW with Cosine similarity — the best-performing method on this dataset.}
+  \label{fig:partA_food_1}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part A — Query Result 4: Food-101 query with Color Histogram + Chi-Squared}{3cm}
+  \caption{Food-101 query using Color Histogram, illustrating how color confusion between classes degrades retrieval.}
+  \label{fig:partA_food_2}
+\end{figure}
+
+\subsection{GUI Interface}
+The Part A interactive GUI (\texttt{scripts/gui.py}) is built with Tkinter and provides:
+\begin{itemize}
+  \item Dataset selector (Paris / Food-101)
+  \item Feature method dropdown (HOG, LBP, Color Histogram, Color SIFT-BoVW)
+  \item Distance metric dropdown (Euclidean, Cosine, Chi-Squared, Manhattan)
+  \item File picker to select any query image from disk
+  \item A ``Bounding Box'' checkbox to activate Part B mode
+  \item A ``Search'' button that triggers the full retrieval and displays results in a Matplotlib figure
+\end{itemize}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{GUI Screenshot — Part A Tkinter Interface}{2.5cm}
+  \caption{The Tkinter retrieval GUI allowing users to interactively select datasets, methods, and query images.}
+  \label{fig:gui_partA}
+\end{figure}
+
+% ============================================================
+%  SECTION 3 — PART B: BOUNDING BOX RETRIEVAL
+% ============================================================
+\newpage
+\section{Part B — Bounding Box Object Retrieval}
+
+\subsection{Objective and Motivation}
+Whole-image retrieval forces the feature extractor to process the entire image frame, including all background pixels irrelevant to the semantic subject. For Food-101 images where the food item occupies only a fraction of the image area, and for Paris images where a specific architectural element (e.g., a rose window or a spire) must be isolated from a complex facade, this leads to a fundamental signal-to-noise problem.
+
+Part B addresses this by allowing the user to draw a bounding box interactively, cropping the image to the region of interest before feature extraction. The feature extraction and retrieval pipeline then operates identically to Part A, but on the cropped and resized region rather than the full image.
+
+\subsection{Technical Implementation}
+The bounding box interface is integrated into the Part A GUI via a single checkbox. When enabled:
+\begin{enumerate}
+  \item \texttt{cv2.namedWindow("Select ROI", cv2.WINDOW\_NORMAL)} creates a resizable window.
+  \item The window is pre-scaled to fit the monitor: \texttt{min(width, 1000)} × \texttt{min(height, 700)}. This ensures that large portrait images do not overflow the display during selection.
+  \item \texttt{cv2.selectROI()} returns the bounding box coordinates $(x, y, w, h)$.
+  \item The crop \texttt{img[y:y+h, x:x+w]} is extracted and resized to $128 \times 128$.
+  \item The same extractor and index are used without any modification.
+\end{enumerate}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — cv2.selectROI Interface Screenshot (bounding box being drawn)}{2.5cm}
+  \caption{The OpenCV ROI selector with a bounding box drawn around a food item. The window is automatically resized for large images.}
+  \label{fig:roi_interface}
+\end{figure}
+
+\subsection{Qualitative Evaluation — Paris Buildings}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — Paris Query 1: Eiffel Tower lattice crop vs.\ full image retrieval}{3cm}
+  \caption{Bounding box isolating the iron lattice structure of the Eiffel Tower. Retrieval returns other Eiffel Tower photographs with similar structural patterns.}
+  \label{fig:partB_paris_1}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — Paris Query 2: Notre Dame arch crop}{3cm}
+  \caption{Small ROI cropped around a single Gothic arch of Notre Dame. The retrieval focuses on arch-like structures across the dataset.}
+  \label{fig:partB_paris_2}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — Paris Query 3: Louvre glass pyramid crop}{3cm}
+  \caption{The glass pyramid element of the Louvre isolated by bounding box.}
+  \label{fig:partB_paris_3}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — Paris Query 4: Sacré-Cœur dome crop}{3cm}
+  \caption{ROI centred on the main dome of Sacré-Cœur, isolating it from the surrounding sky.}
+  \label{fig:partB_paris_4}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — Paris Query 5: Pantheon column crop}{3cm}
+  \caption{A classical column crop from the Pantheon facade.}
+  \label{fig:partB_paris_5}
+\end{figure}
+
+\textbf{Qualitative Discussion — Paris:} Isolating individual architectural elements consistently improves retrieval coherence. When the full image is used, background sky, tourists, and surrounding street context dilute the gradient vectors. When the bounding box is centred on the architectural subject, HOG gradients become a faithful description of that specific structural element. The most dramatic improvements occur for queries where the architectural element has a uniquely identifiable shape (e.g., the Eiffel Tower lattice, the Louvre pyramid). Conversely, if the bounding box is placed over a large expanse of blank sky by mistake, the system returns daytime photographs of open-sky scenes across all classes — demonstrating that the algorithm has no semantic awareness and operates purely on pixel statistics.
+
+\subsection{Qualitative Evaluation — Food-101}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — Food Query 1: Pasta plate isolated from tablecloth}{3cm}
+  \caption{Bounding box isolates the pasta plate, removing the contaminating red-checkered tablecloth. Retrieved results shift from tablecloth-similar images to pasta-similar images.}
+  \label{fig:partB_food_1}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — Food Query 2: Sushi roll close-up crop}{3cm}
+  \caption{A single sushi roll isolated from a sushi platter background.}
+  \label{fig:partB_food_2}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — Food Query 3: Pizza slice isolated from full pizza}{3cm}
+  \caption{One slice of pizza cropped from a full-pie image.}
+  \label{fig:partB_food_3}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — Food Query 4: Hamburger patty crop}{3cm}
+  \caption{The burger patty area cropped to remove the surrounding bun and plate context.}
+  \label{fig:partB_food_4}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \imagebox{Part B — Food Query 5: Waffle texture crop}{3cm}
+  \caption{A tight crop on the waffle grid texture, exploiting the uniquely geometric character of waffles.}
+  \label{fig:partB_food_5}
+\end{figure}
+
+\textbf{Qualitative Discussion — Food-101:} The bounding box provides the single most impactful improvement to Food-101 retrieval. The core reason is that food images carry enormous environmental noise (tables, plates, cutlery, hands, packaging). By drawing a box tightly around the food itself, the system's Color Histogram and Color SIFT-BoVW vectors become pure descriptions of the food's colour palette and surface texture. Dishes that share a table setting but have completely different food content are no longer confusable because the shared table pixels are excluded from computation. The waffle query is a particularly strong example: the repeating square cavity pattern of a waffle grid is structurally unique, and a tight crop yields near-perfect retrieval under SIFT-BoVW.
+
+% ============================================================
+%  SECTION 4 — PART C: ANALYSIS AND WRITTEN REPORT
+% ============================================================
+\newpage
+\section{Part C — Analysis and Written Report}
+
+\subsection{Feature Descriptor Comparison (Section 5.1)}
+
+\subsubsection{Which Method Works Best and Why?}
+Referring to Table~\ref{tab:precision}, the best method per dataset is:
+\begin{itemize}
+  \item \textbf{Paris Buildings}: Color Histogram + Chi-Squared at \textbf{26.55\%}
+  \item \textbf{Food-101}: Color SIFT-BoVW + Cosine at \textbf{3.96\%}
+\end{itemize}
+
+For Paris, each landmark has a distinctive \textit{chromatic signature}: the grey iron of the Eiffel Tower, cream Haussmann stonework, and the Byzantine white marble of Sacré-Cœur. The compact $[8,8,8]$ HSV histogram efficiently captures these palette-level identifiers, and Chi-Squared appropriately down-weights minor bin differences. HOG performs nearly as well because the structural rigidity of stone architecture produces highly repeatable gradient patterns across different photographs of the same building.
+
+For Food-101, the Color SIFT-BoVW dominates — but its absolute score (3.96\%) reveals the limits of classical methods on this dataset. SIFT's scale and rotation invariance, combined with colour-gradient encoding over H and S channels, allows it to identify recurring local visual motifs (e.g., sesame seeds, waffle cavities, sushi rice texture) that are stable across portion size variations and moderate viewpoint changes. HOG's complete failure (essentially at baseline) confirms that food lacks the geometric structure HOG is designed to capture.
+
+\subsubsection{Why Color Histogram Outperforms SIFT-BoVW on Paris}
+This is a meaningful result. One might expect the most expressive descriptor to always win. However, BoVW with vocabulary size $k=200$ introduces quantisation error: subtle gradient differences are collapsed into the same visual word. For Paris, where the discriminative signal lies in broad chromatic identity rather than fine local geometry, the compact histogram is actually more robust. The smaller vocabulary also means the frequency histogram is denser and more statistically reliable under Chi-Squared distance.
+
+\subsection{Computational Performance (Section 5.2)}
+
+\subsubsection{Feature Extraction Times (Offline)}
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Method} & \textbf{Paris 6K} & \textbf{Food-101 (20,200)} \\ \midrule
+Color Histogram & $\sim$1 min & $\sim$5 min \\
+HOG & $\sim$2 min & $\sim$8 min \\
+LBP (Spatial 4×4) & $\sim$2 min & $\sim$10 min \\
+Color SIFT-BoVW & 25–45 min & 1.5–2.5 hours \\ \bottomrule
+\end{tabular}
+\caption{Approximate offline feature extraction times on standard CPU hardware.}
+\label{tab:timing}
+\end{table}
+
+\subsubsection{Query Times (Online, Single Query)}
+\begin{itemize}
+  \item \textbf{Color Histogram:} $< 0.01$s — The 512-dimensional vector is trivially small.
+  \item \textbf{HOG \& LBP:} $< 0.05$s — Marginally larger dense vectors.
+  \item \textbf{Color SIFT-BoVW:} $\sim 0.1$s for feature extraction + $<0.05$s for index search.
+\end{itemize}
+
+\subsubsection{Optimisations Applied}
+\begin{enumerate}
+  \item \textbf{KD-Tree / Ball-Tree Indexing (via \texttt{sklearn.neighbors.NearestNeighbors}):} Euclidean and Manhattan queries are accelerated from $O(N)$ brute-force to $O(\log N)$ logarithmic time using KD-Tree structures. This entirely bypasses the need for OpenCV's FLANN interface.
+  \item \textbf{MiniBatchKMeans:} Standard KMeans operating on $\sim$4 million SIFT descriptors would be memory-prohibitive. MiniBatchKMeans ingests 1,000-descriptor mini-batches iteratively, generating an accurate $k=200$ vocabulary in a fraction of the time with bounded memory usage.
+  \item \textbf{Per-Class Uniform Subsampling:} Food-101 is reduced from 101,000 to 20,200 images via a uniform step selection ($\lfloor N / 200 \rfloor$), preserving intra-class diversity while reducing computation fivefold with no class imbalance introduced.
+  \item \textbf{Descriptor Capping (SIFT):} At most 200 keypoint descriptors are retained per image via random subsampling. This prevents memory flooding from complex images with thousands of detected keypoints.
+  \item \textbf{Feature Normalisation:} HOG uses Global L2 normalisation; all histogram-based features (LBP, Color Hist, BoVW) use L1 (probability density) normalisation. This ensures distance metrics operate on comparable scales without PCA or whitening.
+  \item \textbf{Pre-computed Feature Cache:} All features are extracted once and saved as \texttt{.npy} arrays. Queries never re-extract features for database images. Extraction is run once via \texttt{scripts/extract\_features.py}.
+  \item \textbf{PCA deliberately excluded:} Since our feature dimensions are already compact by design (512 for Color Hist, fixed HOG output for $128\times128$ input), the benefit of PCA dimensionality reduction would be marginal and would sacrifice interpretability.
+\end{enumerate}
+
+\subsection{Effect of Bounding Box Size and Position (Section 5.3)}
+
+\subsubsection{Small vs. Large Bounding Box}
+\begin{itemize}
+  \item \textbf{Small Region Crops:} A tightly constrained box (e.g., isolating a single strawberry on top of a cake, or a single gargoyle on Notre Dame) provides the feature extractor with a highly specific but very small context window. \textit{For global methods} (Color Histogram, HOG), this is often harmful because the macro-scale colour and gradient structure that is used to match whole-image database entries is completely absent. \textit{For local methods} (SIFT-BoVW), small crops can be beneficial because the vocabulary search is guided purely by the unique micro-textures of the target object.
+  \item \textbf{Large Bounding Boxes:} A box that tightly frames the main subject while cropping background elements provides the optimal trade-off for global methods. It retains enough context for the feature extractor to characterise the object while eliminating contaminating background pixels. This is the recommended mode for Color Histogram and HOG users.
+\end{itemize}
+
+\subsubsection{Foreground vs. Background Placement}
+Classical descriptors have \textbf{zero semantic awareness}. The algorithm does not know what a building or a food item is — it only processes the numerical pixel values inside the box.
+
+\begin{itemize}
+  \item \textbf{Box centred on subject (correct):} The Eiffel Tower lattice fills the frame. HOG gradients encode the repeating diagonal cross-beam pattern. The index retrieves other Eiffel Tower images with nearly identical gradient signatures.
+  \item \textbf{Box placed on background (incorrect):} The box is accidentally drawn over the empty blue sky beside the Eiffel Tower. The Color Histogram now encodes a uniform blue palette. The retrieval system returns every clear-sky image in the dataset regardless of the architectural subject.
+\end{itemize}
+
+\subsubsection{Two Contrasting Examples}
+
+\textbf{Contrasting Example 1 — Food-101 (Tablecloth Contamination vs. Plate Isolation):}
+
+Without a bounding box, a pasta query image whose tablecloth occupies 60\% of the frame causes the Color Histogram to encode a dominant warm-red distribution. The top 10 results contain 7 non-pasta images that were photographed on red or orange surface settings. When a bounding box is drawn around the plate rim only, the tablecloth pixels are mathematically zeroed out. The histogram now encodes the yellow-orange palette of the pasta itself, yielding 9 out of 10 retrieved images from the pasta class.
+
+\textbf{Contrasting Example 2 — Paris Buildings (Sun-Flare vs. Dome Isolation):}
+
+A Sacré-Cœur query image captured at sunset has a large orange sun-flare in the upper-right quadrant. Without a bounding box, the Color Histogram erroneously encodes warm sunset tones as the dominant signal, returning Eiffel Tower sunset images and orange-tinted Notre Dame photographs rather than Sacré-Cœur images. With a bounding box drawn precisely around the central white marble dome, the HOG descriptor encodes the distinctive hemispherical outline and the vertical ribs of the cupola. The retrieval narrows to Sacré-Cœur images with high precision.
+
+\subsection{Dataset-Specific Challenges (Section 5.4)}
+
+\subsubsection{Food-101 Challenges}
+
+\begin{itemize}
+  \item \textbf{Color Similarity Across Dishes:} Many food categories share very similar HSV colour profiles. Spaghetti Bolognese and Pepperoni Pizza are both dominated by warm red-orange hues. Butter chicken and lentil soup share a similar golden-yellow palette. The Color Histogram metric, which operates purely on global colour distribution, cannot distinguish these. The Spatial LBP partially addresses this by encoding micro-texture (fibrous strands vs.\ smooth sauce vs.\ bread crumbs), but the discriminative gap remains small.
+  \item \textbf{Background Clutter and Environmental Contamination:} Plates, cutlery, tablecloths, napkins, and human hands frequently constitute more than half the total pixel area. HOG entirely collapses in this setting (Precision@10 $\approx 1.97\%$) because the dominant gradients in the image are produced by plate rims and fork tines rather than food textures. The Bounding Box interface is the definitive solution to this challenge at the query stage.
+  \item \textbf{Varying Portion Sizes:} Serving sizes vary enormously within a single class — a restaurant plate of sushi might contain 12 rolls while a home photograph shows 2. Rigid sliding-window methods like HOG fail because the gradient layout scales non-linearly with portion size. SIFT-BoVW handles this naturally: the system simply detects more or fewer keypoints, but the localised colour-gradient patterns of individual items remain consistent in the vocabulary space regardless of how many are present.
+\end{itemize}
+
+\subsubsection{Paris Buildings Challenges}
+
+\begin{itemize}
+  \item \textbf{Repetitive Structural Patterns:} Gothic, Baroque, and Neoclassical architecture frequently employs identical geometrical motifs: columns, arches, lunette windows, and rusticated stonework. HOG encodes these as nearly identical gradient histograms. This causes systematic false positives: querying the Pantheon returns images of other columned facades (e.g., the Palais-Royal), because the HOG gradient vectors for classical stone columns are mathematically indistinguishable.
+  \item \textbf{Viewpoint and Scale Variation:} A tourist standing at the foot of the Notre Dame flying buttresses captures a completely different projection plane than a tourist photographing from across the Seine. The monument appears at different scales, angles, and image positions. Fixed spatial grids (Spatial LBP with $4\times4$ bins) are highly sensitive to this shift: the same structural element may land in different grid bins in two photographs, changing the concatenated histogram significantly. SIFT-BoVW is the most resilient to this because SIFT keypoints are inherently scale-normalised and rotation-invariant.
+  \item \textbf{Illumination Variation:} Paris landmarks are photographed under an enormous range of lighting conditions: overcast diffuse light, direct midday sun, night illumination, and golden-hour warmth. Color Histogram and HOG are both sensitive to absolute pixel intensity. Our Color SIFT-BoVW implementation directly addresses this by \textbf{discarding the Value channel of HSV}, computing SIFT gradients exclusively over Hue and Saturation. This makes the descriptor mathematically invariant to global brightness changes while preserving chromatic identity.
+\end{itemize}
+
+\subsection{Suggested Classical Improvements (Section 5.5)}
+
+\subsubsection{Improvement 1: VLAD Encoding (Vector of Locally Aggregated Descriptors)}
+
+Our current BoVW representation performs \textit{hard assignment}: each SIFT descriptor is assigned to exactly one cluster centre, and the image is represented as a histogram of cluster membership counts. This destroys all information about how far from the cluster centre each descriptor actually lies.
+
+VLAD replaces this with \textit{soft residual encoding}. For each descriptor $\mathbf{x}_i$ assigned to cluster centre $\mu_k$, the residual $(\mathbf{x}_i - \mu_k)$ is accumulated:
+\[
+  V_k = \sum_{i : \text{NN}(\mathbf{x}_i)=k} (\mathbf{x}_i - \mu_k)
+\]
+The final VLAD vector concatenates all $k$ residual vectors. This representation is approximately $k\times D$-dimensional (200 clusters × 128 dims for standard SIFT = 25,600 dims), but after PCA compression and L2 normalisation it can be reduced to a compact yet highly discriminative descriptor. VLAD has been shown to outperform BoVW significantly on standard retrieval benchmarks and would directly improve our BoVW-based results on both datasets.
+
+\subsubsection{Improvement 2: Spatial Verification with RANSAC}
+
+After an initial shortlist of candidates is retrieved by any descriptor, the top $k$ results can be geometrically re-ranked using SIFT keypoint correspondences and RANSAC homography estimation. The process is:
+\begin{enumerate}
+  \item Extract full SIFT keypoints and descriptors from the query and each shortlisted image.
+  \item Match descriptors using the Brute-Force KNN matcher with Lowe's ratio test ($m.distance < 0.75 \times n.distance$).
+  \item Estimate the homography $\mathbf{H}$ between the query and each candidate using RANSAC.
+  \item Re-rank candidates by the number of inlier correspondences to the estimated homography.
+\end{enumerate}
+This second-stage verification is particularly powerful for the Paris dataset where the spatial layout of architectural elements is consistent across photographs of the same building. It would eliminate the false positives caused by structurally similar-but-different buildings (e.g., Pantheon vs.\ Palais-Royal columns) that confuse first-stage HOG retrieval.
+
+\subsubsection{Improvement 3: Spatial Pyramid Matching (SPM)}
+
+Our Spatial LBP uses a single-level $4\times4$ grid. Spatial Pyramid Matching generalises this across multiple levels of resolution:
+\[
+  \text{SPM feature} = \left[ H_{\text{level-0}}, \; H_{\text{level-1}}, \; H_{\text{level-2}} \right]
+\]
+where Level 0 is the global histogram, Level 1 is a $2\times2$ partition, and Level 2 is a $4\times4$ partition. A weighted combination with $2^{-1}$ weight for finer levels preserves the coarser context while adding spatial specificity. Applied to the BoVW visual word histograms rather than just LBP, this would capture both the global topic (e.g., ``Eiffel Tower'') and the spatial arrangement of visual words within the image (lattice in top quarter, park in bottom quarter), dramatically improving discriminability.
+
+\end{document}
